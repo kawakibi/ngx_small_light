@@ -568,6 +568,16 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
                           __LINE__);
             of = (char *)ngx_http_small_light_image_exts[ictx->type - 1];
         } else if (type == NGX_HTTP_SMALL_LIGHT_IMAGE_WEBP) {
+            if( iw > NGX_HTTP_SMALL_LIGHT_IMAGE_MAX_SIZE_WEBP || 
+                ih > NGX_HTTP_SMALL_LIGHT_IMAGE_MAX_SIZE_WEBP) {
+                of = (char *)ngx_http_small_light_image_exts[ictx->type - 1];
+                 ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+              "width=%f or height=%f is too large for webp transformation, MAX SIZE WEBP : %d. Resetting type to %s",
+                iw, ih, 
+                NGX_HTTP_SMALL_LIGHT_IMAGE_MAX_SIZE_WEBP,
+                of
+                );
+            } else {
 #if defined(MAGICKCORE_WEBP_DELEGATE)
             ictx->type = type;
 #else
@@ -577,6 +587,7 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
                           __LINE__);
             of = (char *)ngx_http_small_light_image_exts[ictx->type - 1];
 #endif
+            }
         } else {
             ictx->type = type;
         }
