@@ -100,7 +100,7 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
     int                                     rmprof_flg, progressive_flg, cmyk2rgb_flg;
     double                                  iw, ih, q;
     char                                   *unsharp, *sharpen, *blur, *of, *of_orig;
-    MagickWand                             *trans_wand, *canvas_wand, *source_wand;
+    MagickWand                             *trans_wand, *canvas_wand, *canvas_bg_wand, *source_wand;
     DrawingWand                            *border_wand;
     PixelWand                              *bg_color, *canvas_color, *border_color;
     GeometryInfo                            geo;
@@ -112,8 +112,9 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
     u_char                                  jpeg_size_opt[32], crop_geo[128], size_geo[128], embedicon_path[256];
     ColorspaceType                          color_space;
 #if MagickLibVersion >= 0x690
-    int                                     autoorient_flg;
+    int                                     autoorient_flg, backgroundfill_flg;
 #endif
+
 
     status = MagickFalse;
 
@@ -239,10 +240,29 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
         DestroyMagickWand(source_wand);
     }
 
-    /* re-calc size. */
+    /* calc size. */
+    iw = (double)MagickGetImageWidth(ictx->wand);
+    ih = (double)MagickGetImageHeight(ictx->wand);
+
+    /* dpr adjustment */
+    if (sz.img_dpr > 1 && (iw < sz.dw || ih < sz.dh )) {
+        MagickAdaptiveResizeImage(ictx->wand, iw*sz.img_dpr, ih*sz.img_dpr);
+
+        sz.sw = iw * sz.img_dpr;
+        sz.sh = ih * sz.img_dpr;
+        sz.scale_flg = 1;
+
+        ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
+                      "dpr info:iw=%f,ih=%f,sw=%f,sh=%f,resized source to %f x %f",
+                      iw, ih, sz.sw, sz.sh, iw*sz.img_dpr, ih*sz.img_dpr);
+
+    }
+
+    /* calc size again */
     iw = (double)MagickGetImageWidth(ictx->wand);
     ih = (double)MagickGetImageHeight(ictx->wand);
     ngx_http_small_light_calc_image_size(r, ctx, &sz, iw, ih);
+
 
     /* adjust image offset automatically */
     ngx_http_small_light_imagemagick_adjust_image_offset(r, ictx, &sz);
@@ -261,6 +281,8 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
     if (sz.dh == NGX_HTTP_SMALL_LIGHT_COORD_INVALID_VALUE) {
         sz.dh = sz.sh;
     }
+
+
 
     /* crop, scale. */
     if (sz.scale_flg != 0) {
@@ -314,6 +336,31 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
         }
 
         ngx_http_small_light_adjust_canvas_image_offset(&sz);
+
+        // check background fill
+        backgroundfill_flg = ngx_http_small_light_parse_flag(NGX_HTTP_SMALL_LIGHT_PARAM_GET_LIT(&ctx->hash, "backgroundfill"));
+        if (backgroundfill_flg == 1) {
+
+            // first trim whitespace off the original image
+            MagickTrimImage(ictx->wand, 1.0);
+
+            canvas_bg_wand = CloneMagickWand(ictx->wand);
+            MagickResizeImage(canvas_bg_wand, sz.cw/4, sz.ch/4, LanczosFilter, 1.0);
+            MagickGaussianBlurImage(canvas_bg_wand, 0, 1);
+            MagickResizeImage(canvas_bg_wand, sz.cw*2, sz.ch*2, LanczosFilter, 1.0);
+            MagickSetImageOpacity(canvas_bg_wand, 0.5);
+
+            status = MagickCompositeImageGravity(canvas_wand, canvas_bg_wand, AtopCompositeOp, CenterGravity);
+
+            if (status == MagickFalse) {
+                r->err_status = NGX_HTTP_INTERNAL_SERVER_ERROR;
+                DestroyMagickWand(canvas_wand);
+                DestroyString(of_orig);
+                return NGX_ERROR;
+            }
+            DestroyMagickWand(canvas_bg_wand);
+
+        }
 
         status = MagickCompositeImage(canvas_wand, ictx->wand, AtopCompositeOp, sz.dx, sz.dy);
         if (status == MagickFalse) {
@@ -501,7 +548,7 @@ ngx_int_t ngx_http_small_light_imagemagick_process(ngx_http_request_t *r, ngx_ht
 
     /* set params. */
     q = ngx_http_small_light_parse_double(NGX_HTTP_SMALL_LIGHT_PARAM_GET_LIT(&ctx->hash, "q"));
-    if (q > 0.0) {
+    if (q > 0.0 && q <= 100) {
         MagickSetImageCompressionQuality(ictx->wand, q);
     }
 
